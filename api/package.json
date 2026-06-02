@@ -1,0 +1,10 @@
+{
+  "name": "@workspace/api-handler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vercel Function entrypoint that re-exports the pre-bundled @workspace/api-server Express app.",
+  "dependencies": {
+    "@workspace/api-server": "workspace:*"
+  }
+}
