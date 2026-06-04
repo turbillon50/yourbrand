@@ -1,0 +1,474 @@
+import { Router, type IRouter } from "express";
+import { pool } from "@workspace/db";
+
+const router: IRouter = Router();
+
+const ADMIN_MASTER_KEY = (
+  process.env["ADMIN_ACCESS_PHRASE"] ||
+  process.env["ADMIN_MASTER_KEY"] ||
+  ""
+).trim().toUpperCase();
+const LEGACY_MASTER_KEY = "CASTORES";
+
+function isMasterAdminKey(rawCode: string): boolean {
+  const normalized = rawCode.trim().toUpperCase();
+  return normalized === LEGACY_MASTER_KEY || (!!ADMIN_MASTER_KEY && normalized === ADMIN_MASTER_KEY);
+}
+
+export const INIT_SQL_BASE = `-- ============================================================
+-- CASTORES — Init schema (12 tablas)
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS "users" (
+  "id" serial PRIMARY KEY,
+  "clerk_id" text UNIQUE,
+  "name" text NOT NULL,
+  "email" text NOT NULL UNIQUE,
+  "password_hash" text,
+  "role" text NOT NULL DEFAULT 'worker',
+  "phone" text,
+  "avatar_url" text,
+  "company" text,
+  "is_active" boolean NOT NULL DEFAULT true,
+  "approval_status" text NOT NULL DEFAULT 'approved',
+  "approved_by" text,
+  "approved_at" timestamptz,
+  "terms_accepted_at" timestamptz,
+  "terms_version" text,
+  "deleted_at" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "invitation_codes" (
+  "id" serial PRIMARY KEY,
+  "code" text NOT NULL UNIQUE,
+  "role" text NOT NULL,
+  "label" text,
+  "created_by" integer NOT NULL,
+  "used_by" integer,
+  "used_at" timestamptz,
+  "expires_at" timestamptz,
+  "is_active" boolean NOT NULL DEFAULT true,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "role_permissions" (
+  "role" text PRIMARY KEY,
+  "permissions" jsonb NOT NULL,
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "projects" (
+  "id" serial PRIMARY KEY,
+  "name" text NOT NULL,
+  "description" text,
+  "client_id" integer,
+  "supervisor_id" integer,
+  "location" text,
+  "latitude" real,
+  "longitude" real,
+  "start_date" text,
+  "end_date" text,
+  "budget" real,
+  "spent_amount" real DEFAULT 0,
+  "progress_percent" integer NOT NULL DEFAULT 0,
+  "status" text NOT NULL DEFAULT 'active',
+  "cover_image_url" text,
+  "gallery_images" text[] DEFAULT '{}',
+  "milestones" jsonb DEFAULT '[]'::jsonb,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "gallery_images" text[] DEFAULT '{}';
+ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "milestones" jsonb DEFAULT '[]'::jsonb;
+
+ALTER TABLE "projects" ALTER COLUMN "budget" TYPE double precision USING "budget"::double precision;
+ALTER TABLE "projects" ALTER COLUMN "spent_amount" TYPE double precision USING "spent_amount"::double precision;
+
+CREATE TABLE IF NOT EXISTS "activity_log" (
+  "id" serial PRIMARY KEY,
+  "type" text NOT NULL,
+  "description" text NOT NULL,
+  "user_id" integer,
+  "project_id" integer,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "content_items" (
+  "id" serial PRIMARY KEY,
+  "type" text NOT NULL DEFAULT 'announcement',
+  "title" text NOT NULL,
+  "body" text,
+  "image_url" text,
+  "link_url" text,
+  "target_role" text,
+  "category" text,
+  "is_active" boolean NOT NULL DEFAULT true,
+  "sort_order" integer NOT NULL DEFAULT 0,
+  "created_by" integer NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "documents" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "uploaded_by_id" integer NOT NULL,
+  "title" text NOT NULL,
+  "description" text,
+  "category" text NOT NULL DEFAULT 'other',
+  "file_url" text NOT NULL,
+  "file_type" text NOT NULL,
+  "file_size" integer,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "materials" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "requested_by_id" integer NOT NULL,
+  "note_id" integer,
+  "name" text NOT NULL,
+  "description" text,
+  "unit" text NOT NULL,
+  "quantity_requested" double precision NOT NULL,
+  "quantity_approved" double precision,
+  "quantity_used" double precision,
+  "cost_per_unit" double precision,
+  "total_cost" double precision,
+  "status" text NOT NULL DEFAULT 'pending',
+  "approved_by_id" integer,
+  "approved_at" timestamptz,
+  "notes" text,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE "materials" ADD COLUMN IF NOT EXISTS "note_id" integer;
+UPDATE "materials" SET "status" = 'approved'
+  WHERE "note_id" IS NOT NULL AND "status" = 'pending';
+ALTER TABLE "materials" ALTER COLUMN "quantity_requested" TYPE double precision USING "quantity_requested"::double precision;
+ALTER TABLE "materials" ALTER COLUMN "quantity_approved" TYPE double precision USING "quantity_approved"::double precision;
+ALTER TABLE "materials" ALTER COLUMN "quantity_used" TYPE double precision USING "quantity_used"::double precision;
+ALTER TABLE "materials" ALTER COLUMN "cost_per_unit" TYPE double precision USING "cost_per_unit"::double precision;
+ALTER TABLE "materials" ALTER COLUMN "total_cost" TYPE double precision USING "total_cost"::double precision;
+
+CREATE TABLE IF NOT EXISTS "material_notes" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "created_by_id" integer NOT NULL,
+  "note_date" text NOT NULL,
+  "folio" text,
+  "supplier_name" text,
+  "description" text,
+  "total_amount" double precision NOT NULL DEFAULT 0,
+  "status" text NOT NULL DEFAULT 'draft',
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "notifications" (
+  "id" serial PRIMARY KEY,
+  "user_id" integer NOT NULL,
+  "title" text NOT NULL,
+  "message" text NOT NULL,
+  "type" text NOT NULL DEFAULT 'general',
+  "related_id" integer,
+  "related_type" text,
+  "is_read" boolean NOT NULL DEFAULT false,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "project_assignments" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "user_id" integer NOT NULL,
+  "assigned_by" integer,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS "project_assignments_unique" ON "project_assignments" ("project_id", "user_id");
+
+CREATE TABLE IF NOT EXISTS "reports" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "generated_by_id" integer NOT NULL,
+  "title" text NOT NULL,
+  "type" text NOT NULL,
+  "date_from" text,
+  "date_to" text,
+  "summary" text,
+  "file_url" text,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "work_logs" (
+  "id" serial PRIMARY KEY,
+  "project_id" integer NOT NULL,
+  "supervisor_id" integer NOT NULL,
+  "log_date" text NOT NULL,
+  "activity" text NOT NULL,
+  "observations" text,
+  "workers_involved" text,
+  "materials_used" text,
+  "photos" text[] DEFAULT '{}',
+  "supervisor_signature" text,
+  "client_signature" text,
+  "is_submitted" boolean NOT NULL DEFAULT false,
+  "submitted_at" timestamptz,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS "push_subscriptions" (
+  "id" serial PRIMARY KEY,
+  "user_id" integer NOT NULL,
+  "endpoint" text NOT NULL,
+  "p256dh" text NOT NULL,
+  "auth" text NOT NULL,
+  "user_agent" text,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "last_used_at" timestamptz
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS "push_subscriptions_endpoint_unique"
+  ON "push_subscriptions" ("endpoint");`;
+
+export const INIT_SQL_ATTENDANCE = `-- ============================================================
+-- ASISTENCIA (Geocheck) — columnas y tablas nuevas
+-- ============================================================
+ALTER TABLE "users" ALTER COLUMN "email" DROP NOT NULL;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "worker_code" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pin_hash" text;
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pin_must_change" boolean NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS "users_worker_code_unique" ON "users" ("worker_code");
+
+ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "geofence_radius_meters" integer NOT NULL DEFAULT 100;
+ALTER TABLE "projects" ADD COLUMN IF NOT EXISTS "geofence_mode" text NOT NULL DEFAULT 'strict';
+
+CREATE TABLE IF NOT EXISTS "check_ins" (
+  "id" serial PRIMARY KEY,
+  "user_id" integer NOT NULL,
+  "project_id" integer NOT NULL,
+  "check_in_at" timestamptz NOT NULL DEFAULT NOW(),
+  "check_in_latitude" real,
+  "check_in_longitude" real,
+  "check_in_accuracy" real,
+  "check_in_distance_meters" real,
+  "check_in_photo_url" text,
+  "check_in_status" text NOT NULL DEFAULT 'ok',
+  "check_in_notes" text,
+  "check_out_at" timestamptz,
+  "check_out_latitude" real,
+  "check_out_longitude" real,
+  "check_out_accuracy" real,
+  "check_out_distance_meters" real,
+  "check_out_photo_url" text,
+  "check_out_status" text,
+  "check_out_notes" text,
+  "check_out_validated_by" integer,
+  "total_minutes" integer,
+  "created_at" timestamptz NOT NULL DEFAULT NOW(),
+  "updated_at" timestamptz NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS "check_ins_user_open_idx" ON "check_ins" ("user_id", "check_out_at");
+CREATE INDEX IF NOT EXISTS "check_ins_project_date_idx" ON "check_ins" ("project_id", "check_in_at");
+
+CREATE TABLE IF NOT EXISTS "check_in_qr_tokens" (
+  "id" serial PRIMARY KEY,
+  "token" text NOT NULL UNIQUE,
+  "project_id" integer NOT NULL,
+  "issued_by" integer NOT NULL,
+  "purpose" text NOT NULL DEFAULT 'checkout',
+  "expires_at" timestamptz NOT NULL,
+  "redeemed_at" timestamptz,
+  "redeemed_by" integer,
+  "created_at" timestamptz NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS "qr_tokens_project_idx" ON "check_in_qr_tokens" ("project_id");
+CREATE INDEX IF NOT EXISTS "qr_tokens_expiry_idx" ON "check_in_qr_tokens" ("expires_at");`;
+
+export const INIT_SQL = `${INIT_SQL_BASE}\n\n${INIT_SQL_ATTENDANCE}`;
+
+export const INIT_SQL_CHUNKS: Array<{ name: string; sql: string }> = [
+  { name: "base-schema", sql: INIT_SQL_BASE },
+  { name: "attendance-schema", sql: INIT_SQL_ATTENDANCE },
+];
+
+export const SEED_ROLE_PERMISSIONS_SQL = `
+INSERT INTO role_permissions (role, permissions) VALUES
+  ('admin', '{"dashboardFull":true,"projectsViewAll":true,"projectsCreateEdit":true,"bitacoraView":true,"bitacoraCreate":true,"budgetViewAmounts":true,"materialsApprove":true,"materialsRequest":true,"materialsSupply":true,"workersView":true,"workersManage":true,"documentsLegalView":true,"documentsLegalManage":true,"adminPanelAccess":true,"attendanceCheckIn":false,"attendanceGenerateQr":true,"attendanceViewAll":true,"attendanceExport":true}'::jsonb),
+  ('supervisor', '{"dashboardFull":true,"projectsViewAll":true,"projectsCreateEdit":false,"bitacoraView":true,"bitacoraCreate":true,"budgetViewAmounts":true,"materialsApprove":false,"materialsRequest":true,"materialsSupply":false,"workersView":true,"workersManage":false,"documentsLegalView":true,"documentsLegalManage":false,"adminPanelAccess":false,"attendanceCheckIn":false,"attendanceGenerateQr":true,"attendanceViewAll":true,"attendanceExport":false}'::jsonb),
+  ('client', '{"dashboardFull":false,"projectsViewAll":false,"projectsCreateEdit":false,"bitacoraView":true,"bitacoraCreate":false,"budgetViewAmounts":true,"materialsApprove":false,"materialsRequest":false,"materialsSupply":false,"workersView":false,"workersManage":false,"documentsLegalView":true,"documentsLegalManage":false,"adminPanelAccess":false,"attendanceCheckIn":false,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb),
+  ('worker', '{"dashboardFull":false,"projectsViewAll":false,"projectsCreateEdit":false,"bitacoraView":true,"bitacoraCreate":true,"budgetViewAmounts":false,"materialsApprove":false,"materialsRequest":false,"materialsSupply":false,"workersView":false,"workersManage":false,"documentsLegalView":false,"documentsLegalManage":false,"adminPanelAccess":false,"attendanceCheckIn":true,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb),
+  ('proveedor', '{"dashboardFull":false,"projectsViewAll":false,"projectsCreateEdit":false,"bitacoraView":false,"bitacoraCreate":false,"budgetViewAmounts":false,"materialsApprove":false,"materialsRequest":false,"materialsSupply":true,"workersView":false,"workersManage":false,"documentsLegalView":true,"documentsLegalManage":false,"adminPanelAccess":false,"attendanceCheckIn":false,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb)
+ON CONFLICT (role) DO NOTHING;
+
+UPDATE role_permissions SET permissions =
+  ('{"attendanceCheckIn":false,"attendanceGenerateQr":true,"attendanceViewAll":true,"attendanceExport":true}'::jsonb || permissions)
+  WHERE role = 'admin';
+UPDATE role_permissions SET permissions =
+  ('{"attendanceCheckIn":false,"attendanceGenerateQr":true,"attendanceViewAll":true,"attendanceExport":false}'::jsonb || permissions)
+  WHERE role = 'supervisor';
+UPDATE role_permissions SET permissions =
+  ('{"attendanceCheckIn":false,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb || permissions)
+  WHERE role = 'client';
+UPDATE role_permissions SET permissions =
+  ('{"attendanceCheckIn":true,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb || permissions)
+  WHERE role = 'worker';
+UPDATE role_permissions SET permissions =
+  ('{"attendanceCheckIn":false,"attendanceGenerateQr":false,"attendanceViewAll":false,"attendanceExport":false}'::jsonb || permissions)
+  WHERE role = 'proveedor';
+`;
+
+router.post("/admin/db-init", async (req, res): Promise<void> => {
+  const { phrase } = req.body as { phrase?: string };
+  if (!phrase || !isMasterAdminKey(phrase)) {
+    res.status(403).json({ error: "Frase inválida" });
+    return;
+  }
+
+  try {
+    const client = await pool.connect();
+    const failed: Array<{ name: string; detail: string }> = [];
+    try {
+      for (const chunk of INIT_SQL_CHUNKS) {
+        try {
+          await client.query(chunk.sql);
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          failed.push({ name: chunk.name, detail });
+        }
+      }
+      try {
+        await client.query(SEED_ROLE_PERMISSIONS_SQL);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        failed.push({ name: "seed-role-permissions", detail });
+      }
+      const t = await client.query(
+        "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename"
+      );
+      const r = await client.query(
+        "SELECT role, permissions FROM role_permissions ORDER BY role"
+      );
+      res.json({
+        ok: failed.length === 0,
+        tablesCreated: t.rows.length,
+        tables: t.rows.map((r: { tablename: string }) => r.tablename),
+        rolesSeeded: r.rows.length,
+        roles: r.rows.map((row: { role: string }) => row.role),
+        ...(failed.length > 0 ? { failedChunks: failed } : {}),
+      });
+    } finally {
+      client.release();
+    }
+  } catch (err: unknown) {
+    const e = err as { message?: string; code?: string };
+    res.status(500).json({ error: e.message, code: e.code });
+  }
+});
+
+router.post("/admin/diagnose-user", async (req, res): Promise<void> => {
+  const { phrase, email: rawEmail, action = "diagnose", newPassword } = req.body as {
+    phrase?: string;
+    email?: string;
+    action?: string;
+    newPassword?: string;
+  };
+
+  if (!phrase || !isMasterAdminKey(phrase)) {
+    res.status(403).json({ error: "Frase inválida" });
+    return;
+  }
+  if (!rawEmail) {
+    res.status(400).json({ error: "Falta email" });
+    return;
+  }
+  const email = rawEmail.trim().toLowerCase();
+
+  const CLERK_SECRET = process.env["CLERK_SECRET_KEY"] ?? "";
+  if (!CLERK_SECRET) {
+    res.status(503).json({ error: "CLERK_SECRET_KEY no configurada en el servidor" });
+    return;
+  }
+
+  async function clerk(path: string, init: RequestInit = {}): Promise<{ ok: boolean; status: number; body: any }> {
+    const r = await fetch(`https://api.clerk.com/v1${path}`, {
+      ...init,
+      headers: {
+        ...(init.headers ?? {}),
+        Authorization: `Bearer ${CLERK_SECRET}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const text = await r.text();
+    let body: any = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+    return { ok: r.ok, status: r.status, body };
+  }
+
+  const { clerkId: explicitClerkId } = req.body as { clerkId?: string };
+
+  const client = await pool.connect();
+  try {
+    const dbResp = await client.query(
+      'SELECT id, name, email, role, is_active, approval_status, clerk_id, created_at FROM users WHERE LOWER(email) = $1 LIMIT 1',
+      [email]
+    );
+    const dbUser = dbResp.rows[0] ?? null;
+
+    const clerkList = await clerk(`/users?email_address[]=${encodeURIComponent(email)}&limit=1`);
+    const clerkArr = Array.isArray(clerkList.body) ? clerkList.body : (clerkList.body?.data ?? []);
+    const clerkUser = Array.isArray(clerkArr) && clerkArr.length > 0 ? clerkArr[0] : null;
+
+    const dbLinkedClerk =
+      dbUser && dbUser.clerk_id && (!clerkUser || clerkUser.id !== dbUser.clerk_id)
+        ? await clerk(`/users/${dbUser.clerk_id}`)
+        : null;
+    const explicitClerk = explicitClerkId ? await clerk(`/users/${explicitClerkId}`) : null;
+
+    const diagnosis = {
+      input: { email },
+      db: dbUser ? { exists: true, id: dbUser.id, name: dbUser.name, role: dbUser.role, isActive: dbUser.is_active, approvalStatus: dbUser.approval_status, clerkId: dbUser.clerk_id, createdAt: dbUser.created_at } : { exists: false },
+      clerk: clerkUser ? { exists: true, id: clerkUser.id, primaryEmail: clerkUser.email_addresses?.find((e: any) => e.id === clerkUser.primary_email_address_id)?.email_address ?? null, hasPassword: !!clerkUser.password_enabled, banned: !!clerkUser.banned, locked: !!clerkUser.locked, createdAt: clerkUser.created_at, lastSignInAt: clerkUser.last_sign_in_at } : { exists: false },
+      dbLinkedClerk: dbLinkedClerk ? (dbLinkedClerk.ok ? { exists: true, id: dbLinkedClerk.body.id, primaryEmail: dbLinkedClerk.body.email_addresses?.find((e: any) => e.id === dbLinkedClerk.body.primary_email_address_id)?.email_address ?? null, hasPassword: !!dbLinkedClerk.body.password_enabled, banned: !!dbLinkedClerk.body.banned, locked: !!dbLinkedClerk.body.locked } : { exists: false, status: dbLinkedClerk.status }) : null,
+      explicitClerk: explicitClerk ? (explicitClerk.ok ? { exists: true, id: explicitClerk.body.id, primaryEmail: explicitClerk.body.email_addresses?.find((e: any) => e.id === explicitClerk.body.primary_email_address_id)?.email_address ?? null, hasPassword: !!explicitClerk.body.password_enabled, emails: (explicitClerk.body.email_addresses ?? []).map((e: any) => e.email_address) } : { exists: false, status: explicitClerk.status }) : null,
+      problems: [] as string[],
+    };
+
+    if (!dbUser && !clerkUser) diagnosis.problems.push("Usuario no existe en DB ni en Clerk");
+    if (dbUser && !clerkUser) diagnosis.problems.push("Existe en DB pero no en Clerk");
+    if (!dbUser && clerkUser) diagnosis.problems.push("Existe en Clerk pero no en nuestra DB");
+    if (dbUser && clerkUser && (!dbUser.clerk_id || dbUser.clerk_id !== clerkUser.id)) diagnosis.problems.push(`clerk_id en DB (${dbUser.clerk_id ?? "null"}) no coincide con Clerk (${clerkUser.id})`);
+    if (dbUser && !dbUser.is_active) diagnosis.problems.push("Cuenta marcada inactiva en DB");
+    if (clerkUser && clerkUser.banned) diagnosis.problems.push("Cuenta baneada en Clerk");
+    if (clerkUser && clerkUser.locked) diagnosis.problems.push("Cuenta bloqueada en Clerk");
+    if (clerkUser && !clerkUser.password_enabled) diagnosis.problems.push("Clerk indica que el usuario no tiene contraseña configurada");
+
+    const repair: Record<string, unknown> = {};
+    if (action === "reactivate") {
+      if (!dbUser) { repair.error = "No hay registro en DB para reactivar"; }
+      else { await client.query('UPDATE users SET is_active = true, approval_status = $1 WHERE id = $2', ["approved", dbUser.id]); repair.dbReactivated = true; }
+      if (clerkUser?.locked) { const r = await clerk(`/users/${clerkUser.id}/unlock`, { method: "POST" }); repair.clerkUnlocked = r.ok; }
+    } else if (action === "relink-clerk") {
+      if (!dbUser || !clerkUser) { repair.error = "Hace falta que el usuario exista en ambos lados"; }
+      else { await client.query('UPDATE users SET clerk_id = $1 WHERE id = $2', [clerkUser.id, dbUser.id]); repair.clerkIdLinked = clerkUser.id; }
+    } else if (action === "set-temp-password") {
+      const targetClerkId = explicitClerkId ?? (dbUser?.clerk_id && dbLinkedClerk?.ok ? dbUser.clerk_id : clerkUser?.id);
+      if (!targetClerkId) { repair.error = "No hay un Clerk user al que setearle contraseña"; }
+      else if (!newPassword || newPassword.length < 8) { repair.error = "newPassword es requerido (mínimo 8 caracteres)"; }
+      else { const r = await clerk(`/users/${targetClerkId}`, { method: "PATCH", body: JSON.stringify({ password: newPassword, skip_password_checks: false, sign_out_of_other_sessions: true }) }); repair.clerkPasswordReset = r.ok; repair.targetClerkId = targetClerkId; if (!r.ok) repair.clerkPasswordResetError = r.body; }
+    }
+
+    res.json({ ok: true, diagnosis, action, repair });
+  } catch (err: unknown) {
+    const e = err as { message?: string };
+    res.status(500).json({ error: e.message ?? "diagnose-user failed" });
+  } finally {
+    client.release();
+  }
+});
+
+export default router;

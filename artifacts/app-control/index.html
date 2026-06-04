@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover" />
+    <!-- WHITE-LABEL: update BRAND_THEME_COLOR in .env (VITE_BRAND_THEME_COLOR) -->
+    <meta name="theme-color" content="#0A0A0A" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- WHITE-LABEL: update via VITE_BRAND_SHORT_NAME -->
+    <meta name="apple-mobile-web-app-title" content="YourBrand" />
+    <!-- WHITE-LABEL: update via VITE_BRAND_DESCRIPTION -->
+    <meta name="description" content="Work management system" />
+    <!-- WHITE-LABEL: update via VITE_BRAND_NAME -->
+    <title>YourBrand Control</title>
+    <!-- WHITE-LABEL: replace /icon-192.png and /icon-512.png with your brand icons -->
+    <link rel="icon" href="/icon-192.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="512x512" href="/icon-512.png" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,300;1,9..40,400&display=swap" rel="stylesheet">
+    <style>
+      * { -webkit-tap-highlight-color: transparent; }
+      html, body { overscroll-behavior: none; }
+    </style>
+    <!--
+      BOOTSTRAP — runs before React.
+      1) Self-heal: if a stale service worker / cache is detected (older than the
+         current APP_VERSION), clear everything and reload once.
+      2) Demo purge: remove any leftover demo identities from local storage.
+
+      WHITE-LABEL: set BRAND_SLUG below (same value as VITE_BRAND_SLUG in .env).
+    -->
+    <script>
+      (function () {
+        var BRAND_SLUG = 'yourbrand'; // <-- match VITE_BRAND_SLUG in .env
+        var APP_VERSION = 'v1';
+        var KEY = BRAND_SLUG + '_app_version';
+
+        try {
+          var stored = localStorage.getItem(KEY);
+          if (stored !== APP_VERSION) {
+            if ('serviceWorker' in navigator) {
+              navigator.serviceWorker.getRegistrations().then(function (regs) {
+                regs.forEach(function (r) { r.unregister(); });
+              }).catch(function () {});
+            }
+            if (window.caches && caches.keys) {
+              caches.keys().then(function (keys) {
+                keys.forEach(function (k) { caches.delete(k); });
+              }).catch(function () {});
+            }
+            localStorage.setItem(KEY, APP_VERSION);
+          }
+        } catch (e) {}
+
+        // Register service worker for Web Push support.
+        try {
+          if ('serviceWorker' in navigator && location.protocol === 'https:') {
+            window.addEventListener('load', function () {
+              navigator.serviceWorker.register('/sw.js').catch(function () {});
+            });
+            navigator.serviceWorker.addEventListener('message', function (ev) {
+              if (!ev || !ev.data || ev.data.type !== 'SW_ACTIVATED') return;
+              var key = BRAND_SLUG + '_sw_reload_' + (ev.data.version || 'unknown');
+              try {
+                if (sessionStorage.getItem(key)) return;
+                sessionStorage.setItem(key, '1');
+              } catch (e) {}
+              setTimeout(function () { location.reload(); }, 300);
+            });
+          }
+        } catch (e) {}
+
+        // Purge demo user identities from localStorage on app start.
+        var DEMO_EMAILS = [];
+        try {
+          var raw = localStorage.getItem(BRAND_SLUG + '_real_user');
+          if (raw) {
+            var u = JSON.parse(raw);
+            if (u && DEMO_EMAILS.indexOf(u.email) !== -1) {
+              localStorage.removeItem(BRAND_SLUG + '_real_user');
+            }
+          }
+        } catch (e) {}
+        try {
+          if (location.hostname !== 'localhost') {
+            sessionStorage.removeItem(BRAND_SLUG + '_demo_user');
+          }
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
